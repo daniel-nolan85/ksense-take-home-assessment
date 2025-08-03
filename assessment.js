@@ -3,17 +3,13 @@ require('dotenv').config();
 
 // API configuration constants
 const API_KEY = process.env.API_KEY;
-if (!API_KEY) {
-  console.error('API_KEY is not set. Please add it to your .env file.');
-  process.exit(1); // stop execution if no key
-}
 const BASE_URL = 'https://assessment.ksensetech.com/api';
 const HEADERS = { 'x-api-key': API_KEY };
 
 // Utility function to pause execution for a given time (milliseconds)
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const fetchPatientsPage = async (page = 1, limit = 5) => {
+const fetchPatientsPage = async (page, limit) => {
   let retries = 0;
   const maxRetries = 10;
   const baseDelay = 1000;
@@ -45,7 +41,7 @@ const fetchPatientsPage = async (page = 1, limit = 5) => {
             retries + 1
           } for page ${page} after ${delay}ms (status ${status})`
         );
-        await new Promise((res) => setTimeout(res, delay));
+        await sleep(delay);
         retries++;
       } else {
         // Log errors and stop retrying
@@ -59,17 +55,102 @@ const fetchPatientsPage = async (page = 1, limit = 5) => {
   return { patients: [], pagination: null };
 };
 
+// Checks if a given value is invalid
+const isInvalidNumber = (value) =>
+  value === null || value === undefined || value === '' || isNaN(value);
+
+// Calculates a risk score for patients based on blood pressure, body temperature, and age
+const calculateRiskScore = (patient) => {
+  let score = 0;
+  let hasDataQualityIssue = false;
+
+  // Blood Pressure
+  const bp = patient?.blood_pressure;
+  let bpScore = 0;
+  if (typeof bp === 'string' && bp.includes('/')) {
+    const [systolicStr, diastolicStr] = bp.split('/');
+    const systolic = parseInt(systolicStr.trim());
+    const diastolic = parseInt(diastolicStr.trim());
+
+    if (isInvalidNumber(systolic) || isInvalidNumber(diastolic)) {
+      hasDataQualityIssue = true;
+      bpScore = 0;
+    } else {
+      if (systolic < 120 && diastolic < 80) {
+        bpScore = 0;
+      } else if (systolic >= 120 && systolic <= 129 && diastolic < 80) {
+        bpScore = 1;
+      } else if (
+        (systolic >= 130 && systolic <= 139) ||
+        (diastolic >= 80 && diastolic <= 89)
+      ) {
+        bpScore = 2;
+      } else if (systolic >= 140 || diastolic >= 90) {
+        bpScore = 3;
+      }
+    }
+  } else {
+    hasDataQualityIssue = true;
+    bpScore = 0;
+  }
+
+  // Temperature
+  const temp = parseFloat(patient?.temperature);
+  let tempScore = 0;
+  let isFever = false;
+
+  if (isInvalidNumber(temp)) {
+    hasDataQualityIssue = true;
+    tempScore = 0;
+  } else {
+    if (temp <= 99.5) {
+      tempScore = 0;
+    } else if (temp >= 99.6 && temp <= 100.9) {
+      tempScore = 1;
+      isFever = true;
+    } else if (temp >= 101.0) {
+      tempScore = 2;
+      isFever = true;
+    }
+  }
+
+  // Age
+  const age = parseInt(patient?.age);
+  let ageScore = 0;
+
+  if (isInvalidNumber(age)) {
+    hasDataQualityIssue = true;
+    ageScore = 0;
+  } else {
+    if (age < 40) {
+      ageScore = 0;
+    } else if (age >= 40 && age <= 65) {
+      ageScore = 1;
+    } else if (age > 65) {
+      ageScore = 2;
+    }
+  }
+
+  score = bpScore + tempScore + ageScore;
+  return { score, isFever, hasDataQualityIssue };
+};
+
 const fetchAllPatients = async () => {
   let allPatients = [];
   let page = 1;
+  const limit = 5;
   let hasNext = true;
   const failedPages = []; // Track pages that failed to load initially
   let expectedTotal = null; // Store total patients count
 
+  const highRiskPatientIds = [];
+  const feverPatientIds = [];
+  const dataQualityIssueIds = [];
+
   while (hasNext) {
     await sleep(300); // Small delay before each request to avoid rate limits
 
-    const { patients, pagination } = await fetchPatientsPage(page);
+    const { patients, pagination } = await fetchPatientsPage(page, limit);
 
     // Update expected total patients count from API response if available
     if (pagination?.total) expectedTotal = pagination.total;
@@ -80,6 +161,18 @@ const fetchAllPatients = async () => {
       failedPages.push(page);
       page++;
       continue;
+    }
+
+    for (const patient of patients) {
+      const { score, isFever, hasDataQualityIssue } =
+        calculateRiskScore(patient);
+      patient.riskScore = score;
+      patient.isFever = isFever;
+      patient.hasDataQualityIssue = hasDataQualityIssue;
+
+      if (score >= 4) highRiskPatientIds.push(patient.patient_id);
+      if (isFever) feverPatientIds.push(patient.patient_id);
+      if (hasDataQualityIssue) dataQualityIssueIds.push(patient.patient_id);
     }
 
     // Append patients from current page to the main array
@@ -96,19 +189,27 @@ const fetchAllPatients = async () => {
   }
 
   // Retry any pages that previously failed once more before finishing
-  if (failedPages.length) {
-    console.log(`Retrying ${failedPages.length} failed page(s)...`);
+  for (const failedPage of failedPages) {
+    await sleep(500);
+    const { patients } = await fetchPatientsPage(failedPage);
 
-    for (const failedPage of failedPages) {
-      await sleep(500); // Delay between retries
-      const { patients } = await fetchPatientsPage(failedPage);
+    if (patients.length) {
+      for (const patient of patients) {
+        const { score, isFever, hasDataQualityIssue } =
+          calculateRiskScore(patient);
+        patient.riskScore = score;
+        patient.isFever = isFever;
+        patient.hasDataQualityIssue = hasDataQualityIssue;
 
-      if (patients.length) {
-        allPatients = [...allPatients, ...patients];
-        console.log(`Recovered page ${failedPage} on second attempt`);
-      } else {
-        console.warn(`Final failure on page ${failedPage}, skipping`);
+        if (score >= 4) highRiskPatientIds.push(patient.patient_id);
+        if (isFever) feverPatientIds.push(patient.patient_id);
+        if (hasDataQualityIssue) dataQualityIssueIds.push(patient.patient_id);
       }
+
+      allPatients = [...allPatients, ...patients];
+      console.log(`Recovered page ${failedPage} on second attempt`);
+    } else {
+      console.warn(`Final failure on page ${failedPage}, skipping`);
     }
   }
 
@@ -120,8 +221,27 @@ const fetchAllPatients = async () => {
     );
   }
 
-  return allPatients;
+  submitAssessment({
+    highRiskPatientIds: [...new Set(highRiskPatientIds)],
+    feverPatientIds: [...new Set(feverPatientIds)],
+    dataQualityIssueIds: [...new Set(dataQualityIssueIds)],
+  });
 };
 
-// Start fetching all patients
+// Logs the patient ID lists grouped by risk category
+const submitAssessment = ({
+  highRiskPatientIds,
+  feverPatientIds,
+  dataQualityIssueIds,
+}) => {
+  console.log('High Risk Patient IDs:', highRiskPatientIds);
+  console.log(`Total High Risk Patients: ${highRiskPatientIds.length}\n`);
+  console.log('Fever Patient IDs:', feverPatientIds);
+  console.log(`Total Fever Patients: ${feverPatientIds.length}\n`);
+  console.log('Data Quality Issue Patient IDs:', dataQualityIssueIds);
+  console.log(
+    `Total Patients with Data Issues: ${dataQualityIssueIds.length}\n`
+  );
+};
+
 fetchAllPatients();
