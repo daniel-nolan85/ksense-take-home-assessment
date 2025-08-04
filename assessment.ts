@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { log } from 'console';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -11,6 +10,9 @@ const HEADERS: Record<string, string> = { 'x-api-key': API_KEY ?? '' };
 
 // Utility function to pause execution for a given time (milliseconds)
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+// Flag to indicate whether fetching process is active
+let isFetching = false;
 
 // Patient type definition
 type Patient = {
@@ -48,9 +50,6 @@ const fetchPatientsPage = async (
       // Safely extract patient data and pagination info
       const patients: Patient[] = res.data?.data ?? [];
       const pagination: Pagination = res.data?.pagination ?? null;
-
-      console.log(`Fetched page ${page}, got ${patients.length} patients`);
-      console.log(`Pagination info for page ${page}:`, pagination);
 
       return { patients, pagination };
     } catch (error: any) {
@@ -178,6 +177,9 @@ const fetchAllPatients = async (): Promise<void> => {
   const feverPatientIds: string[] = [];
   const dataQualityIssueIds: string[] = [];
 
+  isFetching = true;
+  console.log('Fetching patients started...');
+
   while (hasNext) {
     await sleep(300); // Small delay before each request to avoid rate limits
 
@@ -238,21 +240,22 @@ const fetchAllPatients = async (): Promise<void> => {
       }
 
       allPatients = [...allPatients, ...patients];
-      console.log(`Recovered page ${failedPage} on second attempt`);
     } else {
       console.warn(`Final failure on page ${failedPage}, skipping`);
     }
   }
 
   // Log total number of patients fetched, warn if less than expected total
-  console.log(`Finished fetching all patients: ${allPatients.length} total`);
   if (expectedTotal && allPatients.length < expectedTotal) {
     console.warn(
       `WARNING: Expected ${expectedTotal} patients but only retrieved ${allPatients.length}`
     );
   }
 
-  submitAssessment({
+  isFetching = false;
+  console.log('Fetching patients completed.');
+
+  await submitAssessment({
     highRiskPatientIds: [...new Set(highRiskPatientIds)],
     feverPatientIds: [...new Set(feverPatientIds)],
     dataQualityIssueIds: [...new Set(dataQualityIssueIds)],
@@ -269,8 +272,6 @@ const submitAssessment = async ({
   feverPatientIds: string[];
   dataQualityIssueIds: string[];
 }): Promise<void> => {
-  console.log('Submitting assessment...');
-
   const payload = {
     high_risk_patients: highRiskPatientIds,
     fever_patients: feverPatientIds,
@@ -285,11 +286,7 @@ const submitAssessment = async ({
         headers: HEADERS,
       }
     );
-
-    console.log(
-      'Assessment submitted successfully:\n',
-      JSON.stringify(response.data, null, 2)
-    );
+    console.log('Assessment submitted successfully:', response.data);
   } catch (error: any) {
     console.error('Failed to submit assessment:', error.message);
   }
