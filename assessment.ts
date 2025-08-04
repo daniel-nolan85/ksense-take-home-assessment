@@ -1,15 +1,37 @@
-const axios = require('axios');
-require('dotenv').config();
+import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 // API configuration constants
 const API_KEY = process.env.API_KEY;
 const BASE_URL = 'https://assessment.ksensetech.com/api';
-const HEADERS = { 'x-api-key': API_KEY };
+const HEADERS: Record<string, string> = { 'x-api-key': API_KEY ?? '' };
 
 // Utility function to pause execution for a given time (milliseconds)
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
-const fetchPatientsPage = async (page, limit) => {
+// Patient type definition
+type Patient = {
+  patient_id: string;
+  blood_pressure?: string;
+  temperature?: string;
+  age?: string;
+  riskScore?: number;
+  isFever?: boolean;
+  hasDataQualityIssue?: boolean;
+};
+
+// Pagination type
+type Pagination = {
+  total?: number;
+  hasNext?: boolean;
+};
+
+const fetchPatientsPage = async (
+  page: number,
+  limit: number
+): Promise<{ patients: Patient[]; pagination: Pagination | null }> => {
   let retries = 0;
   const maxRetries = 10;
   const baseDelay = 1000;
@@ -23,14 +45,14 @@ const fetchPatientsPage = async (page, limit) => {
       );
 
       // Safely extract patient data and pagination info
-      const patients = res.data?.data ?? [];
-      const pagination = res.data?.pagination ?? null;
+      const patients: Patient[] = res.data?.data ?? [];
+      const pagination: Pagination = res.data?.pagination ?? null;
 
       console.log(`Fetched page ${page}, got ${patients.length} patients`);
       console.log(`Pagination info for page ${page}:`, pagination);
 
       return { patients, pagination };
-    } catch (error) {
+    } catch (error: any) {
       const status = error.response?.status;
 
       // Retry on known intermittent status codes
@@ -56,11 +78,13 @@ const fetchPatientsPage = async (page, limit) => {
 };
 
 // Checks if a given value is invalid
-const isInvalidNumber = (value) =>
+const isInvalidNumber = (value: any): boolean =>
   value === null || value === undefined || value === '' || isNaN(value);
 
 // Calculates a risk score for patients based on blood pressure, body temperature, and age
-const calculateRiskScore = (patient) => {
+const calculateRiskScore = (
+  patient: Patient
+): { score: number; isFever: boolean; hasDataQualityIssue: boolean } => {
   let score = 0;
   let hasDataQualityIssue = false;
 
@@ -95,7 +119,7 @@ const calculateRiskScore = (patient) => {
   }
 
   // Temperature
-  const temp = parseFloat(patient?.temperature);
+  const temp = parseFloat(patient?.temperature ?? '');
   let tempScore = 0;
   let isFever = false;
 
@@ -115,7 +139,7 @@ const calculateRiskScore = (patient) => {
   }
 
   // Age
-  const age = parseInt(patient?.age);
+  const age = parseInt(patient?.age ?? '');
   let ageScore = 0;
 
   if (isInvalidNumber(age)) {
@@ -135,17 +159,17 @@ const calculateRiskScore = (patient) => {
   return { score, isFever, hasDataQualityIssue };
 };
 
-const fetchAllPatients = async () => {
-  let allPatients = [];
+const fetchAllPatients = async (): Promise<void> => {
+  let allPatients: Patient[] = [];
   let page = 1;
   const limit = 5;
   let hasNext = true;
-  const failedPages = []; // Track pages that failed to load initially
-  let expectedTotal = null; // Store total patients count
+  const failedPages: number[] = []; // Track pages that failed to load initially
+  let expectedTotal: number | null = null; // Store total patients count
 
-  const highRiskPatientIds = [];
-  const feverPatientIds = [];
-  const dataQualityIssueIds = [];
+  const highRiskPatientIds: string[] = [];
+  const feverPatientIds: string[] = [];
+  const dataQualityIssueIds: string[] = [];
 
   while (hasNext) {
     await sleep(300); // Small delay before each request to avoid rate limits
@@ -191,7 +215,7 @@ const fetchAllPatients = async () => {
   // Retry any pages that previously failed once more before finishing
   for (const failedPage of failedPages) {
     await sleep(500);
-    const { patients } = await fetchPatientsPage(failedPage);
+    const { patients } = await fetchPatientsPage(failedPage, limit);
 
     if (patients.length) {
       for (const patient of patients) {
@@ -233,7 +257,11 @@ const submitAssessment = ({
   highRiskPatientIds,
   feverPatientIds,
   dataQualityIssueIds,
-}) => {
+}: {
+  highRiskPatientIds: string[];
+  feverPatientIds: string[];
+  dataQualityIssueIds: string[];
+}): void => {
   console.log('High Risk Patient IDs:', highRiskPatientIds);
   console.log(`Total High Risk Patients: ${highRiskPatientIds.length}\n`);
   console.log('Fever Patient IDs:', feverPatientIds);
