@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { log } from 'console';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -84,7 +85,11 @@ const isInvalidNumber = (value: any): boolean =>
 // Calculates a risk score for patients based on blood pressure, body temperature, and age
 const calculateRiskScore = (
   patient: Patient
-): { score: number; isFever: boolean; hasDataQualityIssue: boolean } => {
+): {
+  score: number;
+  isFever: boolean;
+  hasDataQualityIssue: boolean;
+} => {
   let score = 0;
   let hasDataQualityIssue = false;
 
@@ -100,17 +105,19 @@ const calculateRiskScore = (
       hasDataQualityIssue = true;
       bpScore = 0;
     } else {
-      if (systolic < 120 && diastolic < 80) {
-        bpScore = 0;
-      } else if (systolic >= 120 && systolic <= 129 && diastolic < 80) {
-        bpScore = 1;
+      if (systolic >= 140 || diastolic >= 90) {
+        bpScore = 3;
       } else if (
         (systolic >= 130 && systolic <= 139) ||
         (diastolic >= 80 && diastolic <= 89)
       ) {
         bpScore = 2;
-      } else if (systolic >= 140 || diastolic >= 90) {
-        bpScore = 3;
+      } else if (systolic >= 120 && systolic <= 129 && diastolic < 80) {
+        bpScore = 1;
+      } else if (systolic < 120 && diastolic < 80) {
+        bpScore = 0;
+      } else {
+        bpScore = 0;
       }
     }
   } else {
@@ -252,8 +259,8 @@ const fetchAllPatients = async (): Promise<void> => {
   });
 };
 
-// Logs the patient ID lists grouped by risk category
-const submitAssessment = ({
+// Submit the patient assessment results to the API
+const submitAssessment = async ({
   highRiskPatientIds,
   feverPatientIds,
   dataQualityIssueIds,
@@ -261,15 +268,31 @@ const submitAssessment = ({
   highRiskPatientIds: string[];
   feverPatientIds: string[];
   dataQualityIssueIds: string[];
-}): void => {
-  console.log('High Risk Patient IDs:', highRiskPatientIds);
-  console.log(`Total High Risk Patients: ${highRiskPatientIds.length}\n`);
-  console.log('Fever Patient IDs:', feverPatientIds);
-  console.log(`Total Fever Patients: ${feverPatientIds.length}\n`);
-  console.log('Data Quality Issue Patient IDs:', dataQualityIssueIds);
-  console.log(
-    `Total Patients with Data Issues: ${dataQualityIssueIds.length}\n`
-  );
+}): Promise<void> => {
+  console.log('Submitting assessment...');
+
+  const payload = {
+    high_risk_patients: highRiskPatientIds,
+    fever_patients: feverPatientIds,
+    data_quality_issues: dataQualityIssueIds,
+  };
+
+  try {
+    const response = await axios.post(
+      `${BASE_URL}/submit-assessment`,
+      payload,
+      {
+        headers: HEADERS,
+      }
+    );
+
+    console.log(
+      'Assessment submitted successfully:\n',
+      JSON.stringify(response.data, null, 2)
+    );
+  } catch (error: any) {
+    console.error('Failed to submit assessment:', error.message);
+  }
 };
 
 fetchAllPatients();
